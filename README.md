@@ -1,4 +1,4 @@
-# Tenda O1 v1
+# Tenda O1 v1 - 500m Outdoor Point To Point CPE 
 
 This is a collection of useful information and a script to poll live RSSI data from the AP to check alignment. 
 
