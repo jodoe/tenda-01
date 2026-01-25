@@ -8,6 +8,6 @@ To ensure the RSSI is constantly updated, have a ping running to the device in a
 
  ![monitor running](https://github.com/jodoe/tenda-01/blob/main/recording.gif)
 
-When running, you can view the singal quality RSSI, TS and RX speeds and rough bar graph showing signal quality. 
+When running, you can view the signal quality RSSI, TS and RX speeds and a rough bar graph showing signal quality. 
 
 All of this code is AI generated. 
