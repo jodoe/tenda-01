@@ -6,4 +6,6 @@ This is a collection of useful information and a script to poll live RSSI data f
 
 To ensure the RSSI is constantly updated, have a ping running to the device in a seperate window. If no traffic travels over the link the RSSI information rarely updates on the AP.
 
+ ![monitor running](https://github.com/jodoe/tenda-01/blob/main/recording.gif)
+
 When running, you can view the singal quality RSSI, TS and RX speeds and rough bar graph showing signal quality. 
