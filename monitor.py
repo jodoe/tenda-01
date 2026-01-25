@@ -1,49 +1,85 @@
-import telnetlib
+import socket
 import time
+import re
+import sys
 import os
 
-# Configuration
-HOST = "192.168.2.1"  # Your O1 IP
-USER = "root"        # Or root
-PASSWORD = "Fireitup"
-COMMAND = "cat /proc/wlan0/sta_info"
+# --- Configuration ---
+HOST = "192.168.2.1"
+USER = "root"      
+PASS = "Fireitup"
+PEAK = 0
 
-def get_stats():
+def fast_root_monitor():
+    global PEAK
+    
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(3)
+    
     try:
-        # Connect to Tenda O1
-        tn = telnetlib.Telnet(HOST, timeout=5)
+        print(f"[*] Connecting to {HOST}...")
+        s.connect((HOST, 23))
         
-        # Handle Login
-        tn.read_until(b"login: ", timeout=2)
-        tn.write(USER.encode('ascii') + b"\n")
+        # Standard Telnet handshake
+        s.sendall(b'\xff\xfd\x03\xff\xfb\x01') 
+        time.sleep(0.3)
+        s.sendall(f"{USER}\r\n".encode('ascii'))
+        time.sleep(0.3)
+        s.sendall(f"{PASS}\r\n".encode('ascii'))
+        time.sleep(0.5) 
         
-        tn.read_until(b"Password: ", timeout=2)
-        tn.write(PASSWORD.encode('ascii') + b"\n")
-        
-        # Run the command
-        tn.write(COMMAND.encode('ascii') + b"\n")
-        tn.write(b"exit\n") # Close session after command
+        print(f"[*] Monitor Active. Target: {HOST}")
 
-        output = tn.read_all().decode('ascii')
-        return output
+        while True:
+            s.sendall(b"cat /proc/wlan0/sta_info\n")
+            time.sleep(0.2) 
+            
+            s.setblocking(False)
+            try:
+                data = s.recv(16384).decode('ascii', errors='ignore').lower()
+            except:
+                continue
+            
+            rssi_m = re.search(r'rssi:\s*(\d+)', data)
+            tx_m   = re.search(r'current_tx_rate:\s*([^\n\r]+)', data)
+            rx_m   = re.search(r'current_rx_rate:\s*([^\n\r]+)', data)
+            
+            if rssi_m:
+                rssi = int(rssi_m.group(1))
+                tx_s = tx_m.group(1).strip().upper() if tx_m else "N/A"
+                rx_s = rx_m.group(1).strip().upper() if rx_m else "N/A"
+                
+                if rssi > PEAK: 
+                    PEAK = rssi
+                
+                # Math for proportional display (RSSI 50 = 100%)
+                max_signal = 50 
+                bar_total_width = 80 
+                percent = rssi / max_signal
+                bar_filled = int(percent * bar_total_width)
+                bar_size = min(max(0, bar_filled), bar_total_width)
+                bar = "█" * bar_size
+                
+                output = (
+                    f"\rSIG RSSI:{rssi:2} (PK:{PEAK:2}) | "
+                    f"TX:{tx_s:<10} | "
+                    f"RX:{rx_s:<10} | "
+                    f"[{bar:<{bar_total_width}}] {int(percent*100):3}% "
+                )
+                
+                sys.stdout.write(output)
+                sys.stdout.flush()
+
+    except KeyboardInterrupt:
+        print(f"\n\n[*] Stopped. Final Peak: {PEAK}")
     except Exception as e:
-        return f"Error: {e}"
+        print(f"\n[!] Error: {e}")
+        time.sleep(2)
+        fast_root_monitor()
+    finally:
+        s.close()
 
-def parse_and_display(raw_data):
-    os.system('cls' if os.name == 'nt' else 'clear')
-    print("="*40)
-    print(f" TENDA O1 LIVE MONITOR - {HOST}")
-    print("="*40)
-    
-    # Filter for the lines you found
-    for line in raw_data.split('\n'):
-        if any(key in line.lower() for key in ["rssi", "sq", "noise"]):
-            print(f" [>] {line.strip()}")
-    
-    print("="*40)
-    print(" Press Ctrl+C to stop")
-
-while True:
-    data = get_stats()
-    parse_and_display(data)
-    time.sleep(1) # Refresh rate
+if __name__ == "__main__":
+    if sys.platform == "win32":
+        os.system('')
+    fast_root_monitor()
