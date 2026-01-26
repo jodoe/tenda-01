@@ -12,70 +12,77 @@ PEAK = 0
 
 def fast_root_monitor():
     global PEAK
-    
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(3)
+    s.settimeout(5) 
     
     try:
         print(f"[*] Connecting to {HOST}...")
         s.connect((HOST, 23))
         
-        # Standard Telnet handshake
         s.sendall(b'\xff\xfd\x03\xff\xfb\x01') 
-        time.sleep(0.3)
+        time.sleep(0.5)
         s.sendall(f"{USER}\r\n".encode('ascii'))
-        time.sleep(0.3)
+        time.sleep(0.5)
         s.sendall(f"{PASS}\r\n".encode('ascii'))
-        time.sleep(0.5) 
+        time.sleep(1.0) 
         
-        print(f"[*] Monitor Active. Target: {HOST}")
+        print(f"[*] Dashboard Active. Polling: 1.0s. Mode: dBm Precision.")
 
         while True:
-            s.sendall(b"cat /proc/wlan0/sta_info\n")
-            time.sleep(0.2) 
+            # Polling only the essential files
+            s.sendall(b"cat /proc/wlan0/sta_info /proc/wlan0/mib_all\n")
+            
+            # 1.0 Second Polling - Very stable for the hardware
+            time.sleep(1.0) 
             
             s.setblocking(False)
             try:
-                data = s.recv(16384).decode('ascii', errors='ignore').lower()
+                data = s.recv(32768).decode('ascii', errors='ignore').lower()
             except:
                 continue
             
-            rssi_m = re.search(r'rssi:\s*(\d+)', data)
-            tx_m   = re.search(r'current_tx_rate:\s*([^\n\r]+)', data)
-            rx_m   = re.search(r'current_rx_rate:\s*([^\n\r]+)', data)
+            # Parsing logic
+            rssi_m  = re.search(r'rssi:\s*(\d+)', data)
+            tx_m    = re.search(r'current_tx_rate:\s*([^\n\r]+)', data)
+            nse_m   = re.search(r'noise:\s*([-\d]+)', data)
+            temp_m  = re.search(r'thermal:\s*(\d+)', data)
             
             if rssi_m:
                 rssi = int(rssi_m.group(1))
                 tx_s = tx_m.group(1).strip().upper() if tx_m else "N/A"
-                rx_s = rx_m.group(1).strip().upper() if rx_m else "N/A"
+                nse  = nse_m.group(1) if nse_m else "-110" # Default floor if missing
+                temp = temp_m.group(1) if temp_m else "?"
+                
+                # dBm Calculation: Noise Floor + RSSI
+                try:
+                    dbm = int(nse) + rssi
+                except:
+                    dbm = "?"
                 
                 if rssi > PEAK: 
                     PEAK = rssi
                 
-                # Math for proportional display (RSSI 50 = 100%)
-                max_signal = 50 
-                bar_total_width = 80 
-                percent = rssi / max_signal
-                bar_filled = int(percent * bar_total_width)
-                bar_size = min(max(0, bar_filled), bar_total_width)
+                # Proportional Bar (RSSI 50 = 100%)
+                bar_size = min(max(0, int((rssi / 50) * 40)), 40)
                 bar = "█" * bar_size
                 
+                # Updated Clean Display
                 output = (
-                    f"\rSIG RSSI:{rssi:2} (PK:{PEAK:2}) | "
-                    f"TX:{tx_s:<10} | "
-                    f"RX:{rx_s:<10} | "
-                    f"[{bar:<{bar_total_width}}] {int(percent*100):3}% "
+                    f"\rRSSI:{rssi:2} ({dbm:>4} dBm) | PEAK:{PEAK:2} | "
+                    f"NOISE:{nse:>4} | TEMP:{temp:>2}C | "
+                    f"TX:{tx_s:<10} | [{bar:<40}]"
                 )
                 
                 sys.stdout.write(output)
                 sys.stdout.flush()
 
-    except KeyboardInterrupt:
-        print(f"\n\n[*] Stopped. Final Peak: {PEAK}")
-    except Exception as e:
-        print(f"\n[!] Error: {e}")
+    except (socket.error, ConnectionResetError):
+        sys.stdout.write("\n[!] Connection lost. Retrying...")
+        sys.stdout.flush()
         time.sleep(2)
         fast_root_monitor()
+    except KeyboardInterrupt:
+        print(f"\n\n[*] Stopped. Final Peak: {PEAK}")
     finally:
         s.close()
 
