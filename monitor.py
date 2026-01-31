@@ -5,7 +5,7 @@ import sys
 import os
 
 # --- Configuration ---
-HOST = "192.168.2.1"
+# Initial values; HOST will be set by user input
 USER = "root"      
 PASS = "Fireitup"
 PEAK = 0
@@ -15,13 +15,13 @@ RED = "\033[31m"
 YELLOW = "\033[33m"
 GREEN = "\033[32m"
 RESET = "\033[0m"
+CYAN = "\033[36m"
 
 def get_colored_bar(size, total_width=40):
     """Generates a tri-color signal bar based on width."""
     bar_chars = ""
     for i in range(1, total_width + 1):
         if i <= size:
-            # Determine color based on position in the bar
             if i <= 13:
                 bar_chars += f"{RED}█{RESET}"
             elif i <= 26:
@@ -29,17 +29,32 @@ def get_colored_bar(size, total_width=40):
             else:
                 bar_chars += f"{GREEN}█{RESET}"
         else:
-            bar_chars += " "  # Empty space for the rest of the bar
+            bar_chars += " "
     return bar_chars
 
-def fast_root_monitor():
+def select_target():
+    """Menu to select target device."""
+    while True:
+        print(f"\n{CYAN}--- Tenda O1 v1 Wireless Monitor Setup ---{RESET}")
+        print("1) Access Point (192.168.2.1)")
+        print("2) Client       (192.168.2.2)")
+        choice = input(f"\nSelect target (1 or 2): ").strip()
+        
+        if choice == '1':
+            return "192.168.2.1", "AP"
+        elif choice == '2':
+            return "192.168.2.2", "CLIENT"
+        else:
+            print(f"{RED}[!] Invalid choice. Please pick 1 or 2.{RESET}")
+
+def fast_root_monitor(host, label):
     global PEAK
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(5) 
     
     try:
-        print(f"[*] Connecting to {HOST}...")
-        s.connect((HOST, 23))
+        print(f"[*] Connecting to {label} at {host}...")
+        s.connect((host, 23))
         
         s.sendall(b'\xff\xfd\x03\xff\xfb\x01') 
         time.sleep(0.5)
@@ -48,7 +63,7 @@ def fast_root_monitor():
         s.sendall(f"{PASS}\r\n".encode('ascii'))
         time.sleep(1.0) 
         
-        print(f"[*] Dashboard Active. Polling: 1.0s. Mode: dBm Precision.")
+        print(f"[*] {label} Dashboard Active. Polling: 1.0s.")
 
         while True:
             s.sendall(b"cat /proc/wlan0/sta_info /proc/wlan0/mib_all\n")
@@ -79,34 +94,30 @@ def fast_root_monitor():
                 if rssi > PEAK: 
                     PEAK = rssi
                 
-                # Proportional Bar calculation
                 bar_len = min(max(0, int((rssi / 50) * 40)), 40)
                 colored_bar = get_colored_bar(bar_len)
                 
-                # Output formatting
-                # Note: We don't use :<40 padding on {colored_bar} because 
-                # the ANSI codes mess up Pythons string length calculation.
                 output = (
-                    f"\rRSSI:{rssi:2} ({dbm:>4} dBm) | PEAK:{PEAK:2} | "
-                    f"NOISE:{nse:>4} | TEMP:{temp:>2}C | "
-                    f"TX:{tx_s:<10} | [{colored_bar}]"
+                    f"\r{label} | RSSI:{rssi:2} ({dbm:>4} dBm) | PEAK:{PEAK:2} | "
+                    f"TEMP:{temp:>2}C | TX:{tx_s:<10} | [{colored_bar}]"
                 )
                 
                 sys.stdout.write(output)
                 sys.stdout.flush()
 
     except (socket.error, ConnectionResetError):
-        sys.stdout.write("\n[!] Connection lost. Retrying...")
+        sys.stdout.write(f"\n{RED}[!] Connection lost. Retrying {host}...{RESET}")
         sys.stdout.flush()
         time.sleep(2)
-        fast_root_monitor()
+        fast_root_monitor(host, label)
     except KeyboardInterrupt:
-        print(f"\n\n[*] Stopped. Final Peak: {PEAK}")
+        print(f"\n\n[*] Stopped. Final Peak for {label}: {PEAK}")
     finally:
         s.close()
 
 if __name__ == "__main__":
-    # os.system('') enables ANSI support on Windows 10+ terminals
     if sys.platform == "win32":
         os.system('')
-    fast_root_monitor()
+    
+    target_ip, target_label = select_target()
+    fast_root_monitor(target_ip, target_label)
