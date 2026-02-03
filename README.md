@@ -6,7 +6,7 @@ This is a script to poll the Tenda for live RSSI data, once a second, to help wi
 
 To ensure the RSSI is constantly updated, have a ping running to the device in a seperate window. If no traffic travels over the link the RSSI information rarely updates on the AP.
 
- ![monitor running](https://github.com/jodoe/tenda-01/blob/main/recording_cmd.gif)
+ ![monitor running](https://github.com/jodoe/tenda-01/blob/main/recording_cmd2.gif)
 
 When running, you can view the signal quality RSSI, Noise, TX speeds and a rough bar graph showing signal quality. 
 
