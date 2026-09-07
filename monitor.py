@@ -9,6 +9,8 @@ import threading
 USER = "root"      
 PASS = "Fireitup"
 PEAK = 0
+SMOOTH_RETRY = 0.0  # Global tracker for the retry smoothing filter
+
 STATE = {
     "ip": None,
     "label": None,
@@ -23,21 +25,24 @@ RESET = "\033[0m"
 CYAN = "\033[36m"
 MAGENTA = "\033[35m"
 
-def get_simple_bar(size, total_width=30):
-    """Generates a reliable tricolor bar."""
-    done = int(size)
+def get_single_bar(val, total_width=30):
+    """Generates an independent tracking bar for a single polarisation path."""
+    scaled = min(max(0, val), 50) 
+    done = int((scaled / 50) * total_width)
     bar = ""
     for i in range(total_width):
         if i < done:
-            if i < 10: bar += RED + "█" + RESET
-            elif i < 20: bar += YELLOW + "█" + RESET
+            if i < (total_width * 0.33): bar += RED + "█" + RESET
+            elif i < (total_width * 0.66): bar += YELLOW + "█" + RESET
             else: bar += GREEN + "█" + RESET
         else:
-            bar += "░" # Background character for visibility
+            bar += "░"
     return bar
 
 def monitor_logic():
-    global PEAK
+    global PEAK, SMOOTH_RETRY
+    first_run = True
+    
     while STATE["running"]:
         if STATE["ip"] is None:
             time.sleep(0.1)
@@ -46,12 +51,13 @@ def monitor_logic():
         host = STATE["ip"]
         label = STATE["label"]
         PEAK = 0
+        SMOOTH_RETRY = 0.0 # Reset smoothing factor when switching targets
         
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(5)
         
         try:
-            sys.stdout.write(f"\r{YELLOW}[*] Connecting to {label} ({host})...{' '*40}{RESET}\r")
+            sys.stdout.write(f"\r{YELLOW}[*] Connecting to {label} ({host})...{' '*60}{RESET}\n")
             sys.stdout.flush()
             s.connect((host, 23))
             
@@ -71,50 +77,94 @@ def monitor_logic():
                     data = s.recv(65536).decode('ascii', errors='ignore').lower()
                 except: continue
                 
-                rssi_m = re.search(r'rssi:\s*(\d+)', data)
+                # ADVANCED REGEX: Extracts average RSSI, Chain A (Vertical), and Chain B (Horizontal)
+                rssi_m = re.search(r'rssi:\s*(\d+)\s*\(\s*(\d+)\s+(\d+)\s*\)', data)
                 tx_m   = re.search(r'current_tx_rate:\s*([^\n\r]+)', data)
+                rx_m   = re.search(r'current_rx_rate:\s*([^\n\r]+)', data)
                 nse_m  = re.search(r'noise:\s*([-\d]+)', data)
                 temp_m = re.search(r'thermal:\s*(\d+)', data) 
                 chan_m = re.search(r'dot11channel:\s*(\d+)', data)
                 sq_m   = re.search(r'sq:\s*(\d+)', data)
                 cca_m  = re.search(r'cca:\s*(\d+)', data)
+                retry_m = re.search(r'tx_retry_ratio:\s*(\d+)', data)
                 
                 if rssi_m:
-                    rssi = int(rssi_m.group(1))
-                    tx_s = tx_m.group(1).strip().upper() if tx_m else "N/A"
+                    avg_rssi = int(rssi_m.group(1))
+                    chain_v  = int(rssi_m.group(2)) # Chain A = Vertical Polarisation
+                    chain_h  = int(rssi_m.group(3)) # Chain B = Horizontal Polarisation
+                    
+                    tx_s_raw = tx_m.group(1).strip().upper() if tx_m else "N/A"
+                    rx_s_raw = rx_m.group(1).strip().upper() if rx_m else "N/A"
                     nse  = nse_m.group(1) if nse_m else "-110"
                     temp = temp_m.group(1) if temp_m else "?"
                     chan = chan_m.group(1) if chan_m else "?"
                     sq   = sq_m.group(1) if sq_m else "0"
                     cca  = cca_m.group(1) if cca_m else "0"
+                    raw_retry = int(retry_m.group(1)) if retry_m else 0
                     
-                    try: dbm = int(nse) + rssi
+                    # EXPONENTIAL MOVING AVERAGE (EMA) FILTER
+                    if SMOOTH_RETRY == 0.0:
+                        SMOOTH_RETRY = float(raw_retry)
+                    else:
+                        SMOOTH_RETRY = (SMOOTH_RETRY * 0.85) + (raw_retry * 0.15)
+                    display_retry = int(SMOOTH_RETRY)
+                    
+                    try: dbm = int(nse) + avg_rssi
                     except: dbm = "?"
-                    if rssi > PEAK: PEAK = rssi
+                    if avg_rssi > PEAK: PEAK = avg_rssi
                     
-                    # Bar Logic (Scaled for 2.4GHz typical values)
-                    bar_max = 30
-                    scaled_rssi = min(max(0, rssi), 50) 
-                    bar_len = int((scaled_rssi / 50) * bar_max)
-                    colored_bar = get_simple_bar(bar_len, bar_max)
+                    # DUAL STREAM (2T2R) DETECTION LOGIC
+                    mimo_match = re.search(r'MCS(8|9|10|11|12|13|14|15)\b', tx_s_raw)
+                    if mimo_match:
+                        mimo_status = f"{GREEN}[2T2R Dual]{RESET}"
+                    else:
+                        mimo_status = f"{YELLOW}[1T1R Single]{RESET}"
                     
+                    # Format rate data string components cleanly
+                    tx_clean = tx_s_raw.split() if " " in tx_s_raw else tx_s_raw
+                    rx_clean = rx_s_raw.split() if " " in rx_s_raw else rx_s_raw
+                    
+                    # Process coloring tags
                     cca_i = int(cca)
-                    c_clr = RED if cca_i > 500 else (YELLOW if cca_i > 200 else RESET)
+                    c_clr = RED if cca_i > 1500 else (YELLOW if cca_i > 800 else RESET)
                     t_clr = YELLOW if temp != "?" and int(temp) > 55 else RESET
+                    r_clr = RED if display_retry > 40 else (YELLOW if display_retry > 15 else GREEN)
 
                     label_tag = f"{CYAN}[{label}]{RESET}"
-                    output = (f"\r{label_tag} {MAGENTA}CH:{chan}{RESET} | "
-                              f"RSSI:{rssi}({dbm}dBm) | Peak:{PEAK} | "
-                              f"SQ:{sq}% | CCA:{c_clr}{cca}{RESET} | "
-                              f"T:{t_clr}{temp}C{RESET} | "
-                              f"TX:{tx_s[:8]} | {colored_bar}")
                     
-                    sys.stdout.write(output)
-                    sys.stdout.write("\033[K") 
+                    # Generate independent graphical meters
+                    bar_v = get_single_bar(chain_v, total_width=30)
+                    bar_h = get_single_bar(chain_h, total_width=30)
+                    
+                    if not first_run:
+                        sys.stdout.write("\033[F\033[F\033[F\033[F")
+                    first_run = False
+                    
+                    # Line 1: Primary Hardware Configurations
+                    line1 = (f"{label_tag} {MAGENTA}CH:{chan}{RESET} | "
+                             f"Avg_RSSI:{avg_rssi}({dbm}dBm) Peak:{PEAK} | Mode:{mimo_status}")
+                    
+                    # Line 2: Link Performance & Error Telemetry (Moved to its own line)
+                    line2 = (f" └──> Performance | "
+                             f"Retry:{r_clr}{display_retry}%{RESET} | CCA:{c_clr}{cca}{RESET} | "
+                             f"TX:{tx_clean} RX:{rx_clean} | T:{t_clr}{temp}C{RESET}")
+                    
+                    # Line 3: Isolated Vertical Polarisation Gauges
+                    line3 = f"      ├──> V_Polarisation : {bar_v} ({chain_v})"
+                    
+                    # Line 4: Isolated Horizontal Polarisation Gauges
+                    line4 = f"      └──> H_Polarisation : {bar_h} ({chain_h})"
+                    
+                    # Output all lines cleanly to terminal streams
+                    sys.stdout.write(line1 + "\033[K\n")
+                    sys.stdout.write(line2 + "\033[K\n")
+                    sys.stdout.write(line3 + "\033[K\n")
+                    sys.stdout.write(line4 + "\033[K\n")
                     sys.stdout.flush()
 
-        except Exception:
-            sys.stdout.write(f"\r{RED}[!] Connection error. Waiting for target...{' '*20}{RESET}\r")
+        except Exception as e:
+            first_run = True # Reset multi-line cursor tracking on error
+            sys.stdout.write(f"\n{RED}[!] Error: {str(e)[:30]}. Reconnecting...{RESET}\n")
             time.sleep(2)
         finally:
             s.close()
@@ -123,8 +173,7 @@ def main():
     if sys.platform == "win32":
         os.system('') 
     
-    # Initial menu before thread starts
-    print(f"{CYAN}--- Tenda Diagnostic Monitor ---{RESET}")
+    print(f"{CYAN}--- Tenda 01 Alignment Dashboard ---{RESET}")
     print("Select starting device:")
     print("1) Access Point (192.168.2.1)")
     print("2) Client       (192.168.2.2)")
@@ -140,12 +189,11 @@ def main():
         else:
             print(f"{RED}Invalid. Press 1 or 2.{RESET}")
 
-    # Start the monitor thread now that target is selected
     thread = threading.Thread(target=monitor_logic, daemon=True)
     thread.start()
 
-    print(f"\n{GREEN}[*] Monitor Started.{RESET}")
-    print(f"Hotkeys: {YELLOW}1{RESET}=AP, {YELLOW}2{RESET}=Client, {RED}Ctrl+C{RESET}=Exit\n")
+    print(f"\n{GREEN}[*] Real-Time Alignment Dashboard Initialised.{RESET}")
+    print(f"Hotkeys: {YELLOW}1{RESET}=AP, {YELLOW}2{RESET}=Client, {RED}Ctrl+C{RESET}=Exit\n\n\n\n") # 4 lines padding for initial cursor frame wrap
 
     try:
         if os.name == 'nt':
@@ -170,7 +218,8 @@ def main():
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
     except KeyboardInterrupt:
         STATE["running"] = False
-        print("\n\nExiting...")
+        print("\n\nExiting Layout Engine...")
 
 if __name__ == "__main__":
     main()
+
